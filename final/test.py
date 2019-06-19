@@ -59,7 +59,7 @@ def route(network_size, UDP_port_start):
 
 def test(network_size, UDP_port_start):
     random.seed(24563)
-
+    print("\n Updating routing table #1")
     update_routing_table(network_size, UDP_port_start)
     time.sleep(0.5)
 
@@ -71,16 +71,16 @@ def test(network_size, UDP_port_start):
 
     print_routing_table(network_size, UDP_port_start)
     time.sleep(0.5)
-
+    print("\n Updating routing table #2")
     update_routing_table(network_size, UDP_port_start)
     time.sleep(0.5)
 
     print_routing_table(network_size, UDP_port_start)
     time.sleep(0.5)
-
+    print("\n Updating routing table #3")
     update_routing_table(network_size, UDP_port_start)
     time.sleep(0.5)
-
+    print("\n Updating routing table #4")
     update_routing_table(network_size, UDP_port_start)
     time.sleep(0.5)
 
