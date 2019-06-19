@@ -83,13 +83,13 @@ class LSDB(object):
 
 # region Node
 class Node(object):
-    def __init__(self, name, ip=None, udp_port=None, tcp_port=None, edge_weight=None, neighbor_order=None):
+    def __init__(self, name, ip, udp_port, tcp_port, edge_weight, neighbor_order):
         self.name = name
-        self.ip = ip.strip() if ip else None
-        self.udp_port = int(udp_port) if udp_port else None
-        self.tcp_port = int(tcp_port) if tcp_port else None
-        self.edge_weight = float(edge_weight) if edge_weight else None
-        self.neighbor_order = int(neighbor_order) if neighbor_order else None
+        self.ip = ip.strip()
+        self.udp_port = int(udp_port)
+        self.tcp_port = int(tcp_port)
+        self.edge_weight = float(edge_weight)
+        self.neighbor_order = int(neighbor_order)
 
     def connection_info(self, is_udp: bool) -> (str, int):
         if is_udp:
@@ -186,7 +186,7 @@ class Router(object):
         elif message.startswith('ROUTE'):
             self.udp_route(message)
         elif message.startswith('LSP'):
-            self.receive_lsp(message)
+            self.receive_lsp(message, c_ip, c_port)
 
     def write_routing_table(self):
         lines = ["{};{}".format(*row.values()) for row in self.routing_table.values()]
@@ -213,7 +213,7 @@ class Router(object):
 
             self.udp_send(next_ip, next_port, message)
 
-    def udp_send(self, ip, port, message):
+    def udp_send(self, ip, port, message: str):
         with socket(AF_INET, SOCK_DGRAM) as s:
             try:
                 s.sendto(message.encode(), (ip, port))
@@ -231,18 +231,23 @@ class Router(object):
             except Exception as e:
                 print("\nError on Router {} - {}. Tried to send to router {}:{}".format(self.name, e, ip, port))
 
-    def flood_lsp(self, lsp: str):
-        # expected data is: LSP;[src];[sequence];[neighbor name];[edge weight]
+    def tcp_flood(self, node: Node, lsp: str):
         filename = "TCP_output_router_{}.txt".format(self.name)
+        message = "UPDATE;{};{}".format(self.name, node.name)
+        with self.tcp_output_lock:
+            with open(filename, 'a') as f:
+                f.write(message + '\n')
+        self.tcp_send(node.ip, node.tcp_port, lsp)
+
+    def flood_lsp(self, lsp: str, skip_ip=None, skip_port=None):
+        # expected data is: LSP;[src];[sequence];[neighbor name];[edge weight]
         with self.neighbors_lock:
             for neigh, node in self.neighbors.items():
-                message = "UPDATE;{};{}".format(self.name, neigh)
-                with self.tcp_output_lock:
-                    with open(filename, 'a') as f:
-                        f.write(message + '\n')
-                self.tcp_send(node.ip, node.tcp_port, lsp)
+                if node.ip == skip_ip and node.udp_port == skip_port:
+                    continue  # Dont send lsp to the node you received it from
+                Thread(target=self.tcp_flood, args=(node, lsp)).start()
 
-    def receive_lsp(self, data):
+    def receive_lsp(self, data, c_ip, c_port):
         # expected data is: LSP;[src];[sequence];[neighbor name];[edge weight]
         lsp = LSP.parse_lsp(data)
         with self.lsdb_lock:
@@ -251,7 +256,7 @@ class Router(object):
         # forward to all
         # TODO: check if lsp should be flooded?
         if updated:
-            Thread(target=self.flood_lsp, args=(data,)).start()
+            self.flood_lsp(data)
 
     def update_routing_table(self, c_ip, c_port):
         with self.lsdb_lock:
@@ -307,11 +312,12 @@ def router(my_name):
             # Assuming no 'holes' in router naming
             curr_router.routing_table = dict.fromkeys(range(1, int(network_size) + 1), init_route)
             curr_router.routing_table[my_name] = table_entry(cost=0, next_hop=None)
-            for k, (name, ip, udp, tcp, edge_weight) in enumerate(neighs_chunks, start=1):
+            for k, (name, ip, udp, tcp, edge_weight) in enumerate(neighs_chunks):
                 name = int(name)
                 new_weight = get_new_weight(name, 1, k, len(neighs_chunks))
                 weight = new_weight if new_weight else edge_weight
-                curr_router.neighbors[name] = Node(name, ip, udp, tcp, weight, k)
+                curr_router.neighbors[name] = Node(name=name, ip=ip, udp_port=udp, tcp_port=tcp, edge_weight=weight,
+                                                   neighbor_order=k)
                 # build LSP right after updating weights
                 curr_router.create_lsp(seq=1)
 
