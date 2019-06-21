@@ -23,7 +23,7 @@ class LSP(object):
         self.seq = int(seq)
         self.neighbors = neighbors
 
-    def get_weight(self, neigh) -> float:
+    def get_weight(self, neigh) -> int:
         return self.neighbors[neigh]
 
     def to_message(self) -> str:
@@ -39,7 +39,7 @@ class LSP(object):
     def __gt__(self, other):
         return self.src == other.src and self.seq > other.seq
 
-    def __getitem__(self, neigh) -> float:
+    def __getitem__(self, neigh) -> int:
         return self.neighbors[neigh]
 
     def __iter__(self):
@@ -50,7 +50,7 @@ class LSP(object):
         # expected data is: LSP;[src];[sequence];[neighbor name];[edge weight]
         split_data = data.split(sep=';')[1:]
         src, seq, neighs = split_data[0], split_data[1], split_data[2:]
-        neighs_dict = {int(neighs[i]): float(neighs[i + 1]) for i in range(0, len(neighs), 2)}
+        neighs_dict = {int(neighs[i]): int(neighs[i + 1]) for i in range(0, len(neighs), 2)}
         return LSP(src, seq, neighs_dict)
 
 
@@ -88,7 +88,7 @@ class Node(object):
         self.ip = ip.strip()
         self.udp_port = int(udp_port)
         self.tcp_port = int(tcp_port)
-        self.edge_weight = float(edge_weight)
+        self.edge_weight = int(edge_weight)
         self.neighbor_order = int(neighbor_order)
 
     def connection_info(self, is_udp: bool) -> (str, int):
@@ -107,10 +107,13 @@ class Router(object):
         self.ip = ip
         self.udp_port = udp
         self.tcp_port = tcp
+        self.listen_lock = Lock()
         self.listen = False
         self.table_lock = Lock()
         self.udp_output_lock = Lock()
+        self.udp_output_handler = open("UDP_output_router_{}.txt".format(self.name), 'a')
         self.tcp_output_lock = Lock()
+        self.tcp_output_handler = open("TCP_output_router_{}.txt".format(self.name), 'a')
         self.routing_table = {}  # {dest: {cost: , next: }}
         self.round = 1
         self.lsdb_lock = Lock()
@@ -119,27 +122,45 @@ class Router(object):
         self.neighbors = {}  # {neigh:Node()}
 
     def create_lsp(self, seq):
-        self.lsdb.add_lsp(LSP(self.name,
-                              seq,
-                              {node.name: node.edge_weight for node in self.neighbors.values()})
-                          )
+        # get new weights
+        with self.neighbors_lock:
+            for neigh, node in self.neighbors.items():
+                new_weight = get_new_weight(self.name, self.round, node.neighbor_order, len(self.neighbors))
+                if new_weight:
+                    node.edge_weight = new_weight
+        self.lsdb.add_lsp(
+            LSP(src=self.name,
+                seq=seq,
+                neighbors={neigh: node.edge_weight for neigh, node in self.neighbors.items()})
+        )
 
     def start_listeners(self):
         if not self.is_listen():
-            self.listen = True
+            with self.listen_lock:
+                self.listen = True
             print("Start listening on router {}, UDP: {}, TCP: {}".format(self.name, self.udp_port, self.tcp_port))
             threads = [Thread(target=f, args=()) for f in [self.udp_listener, self.tcp_listener]]
             for thread in threads:
                 thread.start()
+            for thread in threads:
+                thread.join()
 
         # return threads
 
     def stop_listeners(self):
         print("Stop listening...")
-        self.listen = False
+        with self.listen_lock:
+            self.listen = False
+        with self.udp_output_lock:
+            self.udp_output_handler.close()
+        with self.tcp_output_lock:
+            self.tcp_output_handler.close()
+        self.udp_send(self.ip, self.udp_port, 'CLOSE')
+        self.tcp_send(self.ip, self.tcp_port, 'CLOSE')
 
     def is_listen(self):
-        return self.listen
+        with self.listen_lock:
+            return self.listen
 
     def udp_listener(self):
         with socket(AF_INET, SOCK_DGRAM) as s:
@@ -184,24 +205,31 @@ class Router(object):
             print("\n Update Routing Table in router {}".format(self.name))
             self.update_routing_table(c_ip, c_port)
         elif message.startswith('ROUTE'):
+            print("\n Route in router {}, message: {} ".format(self.name, message))
             self.udp_route(message)
         elif message.startswith('LSP'):
             self.receive_lsp(message, c_ip, c_port)
 
     def write_routing_table(self):
-        lines = ["{};{}".format(*row.values()) for row in self.routing_table.values()]
-        filename_template = "UDP_output_router_{}.txt"
+        with self.table_lock:
+            lines = ["{};{}".format(*row.values()) for row in self.routing_table.values()]
+            print("\n New routing table for router {}:".format(self.name))
+            print('    \n'.join(lines) + '\n')
+        # filename_template = "UDP_output_router_{}.txt"
 
         with self.udp_output_lock:
-            with open(filename_template.format(self.name), 'a') as f:
-                f.write('\n'.join(lines) + '\n')
+            # with self.udp_output_handler as f:
+            self.udp_output_handler.write('\n'.join(lines) + '\n')
+            # f.flush()
 
     def udp_route(self, data):
         _, dest, message = data.split(sep=';')  # message doesn't contain ';'
-        filename = "UDP_output_router_{}.txt".format(self.name)
+        # filename = "UDP_output_router_{}.txt".format(self.name)
+        print("Writing route to file: " + data)
         with self.udp_output_lock:
-            with open(filename, 'a') as f:
-                f.write(data + '\n')
+            # with open(filename, 'a') as f:
+            self.udp_output_handler.write(data + '\n')
+            # f.flush()
 
         # route to dest according to routing table
         dest = int(dest)
@@ -211,7 +239,7 @@ class Router(object):
             with self.neighbors_lock:
                 next_ip, next_port = self.neighbors[next_hop].connection_info(is_udp=True)
 
-            self.udp_send(next_ip, next_port, message)
+            self.udp_send(next_ip, next_port, data)
 
     def udp_send(self, ip, port, message: str):
         with socket(AF_INET, SOCK_DGRAM) as s:
@@ -232,20 +260,26 @@ class Router(object):
                 print("\nError on Router {} - {}. Tried to send to router {}:{}".format(self.name, e, ip, port))
 
     def tcp_flood(self, node: Node, lsp: str):
-        filename = "TCP_output_router_{}.txt".format(self.name)
+        # filename = "TCP_output_router_{}.txt".format(self.name)
         message = "UPDATE;{};{}".format(self.name, node.name)
         with self.tcp_output_lock:
-            with open(filename, 'a') as f:
-                f.write(message + '\n')
+            # with open(filename, 'a') as f:
+            self.tcp_output_handler.write(message + '\n')
+            # f.flush()
         self.tcp_send(node.ip, node.tcp_port, lsp)
 
     def flood_lsp(self, lsp: str, skip_ip=None, skip_port=None):
         # expected data is: LSP;[src];[sequence];[neighbor name];[edge weight]
+        threads = []
         with self.neighbors_lock:
             for neigh, node in self.neighbors.items():
                 if node.ip == skip_ip and node.udp_port == skip_port:
                     continue  # Dont send lsp to the node you received it from
-                Thread(target=self.tcp_flood, args=(node, lsp)).start()
+                action = Thread(target=self.tcp_flood, args=(node, lsp))
+                action.start()
+                threads.append(action)
+        for action in threads:
+            action.join()
 
     def receive_lsp(self, data, c_ip, c_port):
         # expected data is: LSP;[src];[sequence];[neighbor name];[edge weight]
@@ -262,31 +296,30 @@ class Router(object):
         with self.lsdb_lock:
             lsp = self.lsdb[self.name].to_message()
         self.flood_lsp(lsp)
-        # TODO: Wait until lsp is recieved from all??
+        # Wait until lsp is recieved from all
         while True:
-            # with self.lsdb_lock:
-            if self.round <= self.lsdb.min_sequence():
-                break
+            with self.lsdb_lock:
+                if self.round <= self.lsdb.min_sequence():
+                    break
         # Dijkstra
         with self.table_lock:
             for dest, entry in self.routing_table.items():
                 if dest == self.name:
                     continue
                 with self.lsdb_lock:
-                    new_dist, new_next = dijkstra2(self.lsdb, self.name, dest)
-                entry['cost'] = new_dist
-                entry['next'] = new_next
+                    new_next, new_dist = dijkstra3(self.lsdb.db, self.name, dest)
+                    self.routing_table[dest] = table_entry(new_dist, new_next)
+                    print(
+                        "\n Updated routing table in round {} from {} to {} with cost: {}, next: {}".format(self.round,
+                                                                                                            self.name,
+                                                                                                            dest,
+                                                                                                            new_dist,
+                                                                                                            new_next))
 
         # Update routing table
 
         # Increase round number
         self.round += 1
-        # get new weights
-        with self.neighbors_lock:
-            for neigh, node in self.neighbors.items():
-                new_weight = get_new_weight(neigh, self.round, node.neighbor_order, len(self.neighbors))
-                if new_weight:
-                    node.edge_weight = new_weight
 
         # prepare LSP for next round
         self.create_lsp(seq=self.round)
@@ -314,19 +347,70 @@ def router(my_name):
             curr_router.routing_table[my_name] = table_entry(cost=0, next_hop=None)
             for k, (name, ip, udp, tcp, edge_weight) in enumerate(neighs_chunks):
                 name = int(name)
-                new_weight = get_new_weight(name, 1, k, len(neighs_chunks))
-                weight = new_weight if new_weight else edge_weight
-                curr_router.neighbors[name] = Node(name=name, ip=ip, udp_port=udp, tcp_port=tcp, edge_weight=weight,
+                curr_router.neighbors[name] = Node(name=name, ip=ip, udp_port=udp, tcp_port=tcp,
+                                                   edge_weight=edge_weight,
                                                    neighbor_order=k)
-                # build LSP right after updating weights
-                curr_router.create_lsp(seq=1)
+
+        # build LSP right after updating weights (including new weights)
+        curr_router.create_lsp(seq=1)
 
         curr_router.start_listeners()
+        print("Finished on router: ", my_name)
 
 
 # region Helper Functions
 def table_entry(cost, next_hop):
     return {'cost': cost, 'next': next_hop}
+
+
+def dijkstra3(db, src, dest=None):
+    """ Implement Dijkstra's algorithm
+    : param db: Dictionary with vertices of graph as keys and the
+        corresponding value being a dictionary with neighboring
+        vertices as keys and distance to them from the original vertex as
+        values.
+    : param src: Source vertex
+    : param dest: Destination vertex
+    : returns D: A dictionary with vertices as keys and corresponding value
+        is a list with the first element being a list of the shortest
+        path to the vertex from src and the second element being the shortest
+        distance to that vertex
+    """
+    # extract vertices from db and mark them all as unvisited
+    unvisited = list(db.keys())
+    # Initialize dictionary of shortest distances
+    D = {v: {'path': [], 'distance': 2 ** 31 - 1} for v in unvisited}
+    # Zero out distance to start vertex
+    D[src]['distance'] = 0
+    # While all vertices haven't been yet visited
+    while len(unvisited) > 0:
+        # Select current node as min. of shortest distances so far computed
+        min_dist, curr = min([(D[n]['distance'], n) for n in unvisited])
+        # Add current node to its path
+        D[curr]['path'].append(curr)
+        # We're at the destination already
+        if curr == dest:
+            print("\n Found shortest path from {} to {}, length of: {}, \n    path: {}".format(src, dest,
+                                                                                               D[dest]['distance'],
+                                                                                               D[dest]['path']))
+            return D[dest]['path'][1], D[dest]['distance']
+        # Loop over all neighboring vertices
+        for neigh, dist in db[curr].neighbors.items():
+            # make sure we haven't visited n already
+            if neigh in unvisited:
+                # compute distance to this neighbor through current vertex
+                curr_dist = min_dist + dist
+                # check if this distance is less than currently assigned
+                # tentative distance
+                if curr_dist < D[neigh]['distance']:
+                    # re-assign shortest distance
+                    D[neigh]['distance'] = curr_dist
+                    # shortest path to this vertex is through current vertex
+                    D[neigh]['path'] = D[curr]['path'][:]
+
+        # Remove current node from unvisited ones
+        unvisited.remove(curr)
+    return D
 
 
 def dijkstra(lsdb: LSDB, src, dest, visited=[], distances={}, predecessors={}):
@@ -355,7 +439,7 @@ def dijkstra(lsdb: LSDB, src, dest, visited=[], distances={}, predecessors={}):
         for neigh, weight in lsdb[src].neighbors.items():
             if neigh not in visited:
                 new_distance = distances[src] + weight
-                if new_distance < distances.get(neigh, float('inf')):
+                if new_distance < distances.get(neigh, 2 ** 31 - 1):
                     distances[neigh] = new_distance
                     predecessors[neigh] = src
         # mark as visited
@@ -366,8 +450,11 @@ def dijkstra(lsdb: LSDB, src, dest, visited=[], distances={}, predecessors={}):
         unvisited = {}
         for k in lsdb:
             if k not in visited:
-                unvisited[k] = distances.get(k, float('inf'))
-        x = min(unvisited, key=unvisited.get)
+                unvisited[k] = distances.get(k, 2 ** 31 - 1)
+        if unvisited:
+            x = min(unvisited, key=unvisited.get)
+        else:
+            x = dest
         return dijkstra(lsdb, x, dest, visited, distances, predecessors)
 
 
@@ -437,75 +524,8 @@ def dijkstra2(G, start, end=None):
     Path.reverse()
     return D[end], Path[1]
 
-
 # endregion
 
 
 # Priority dictionary using binary heaps
 # David Eppstein, UC Irvine, 8 Mar 2002
-
-
-class priorityDictionary(dict):
-    def __init__(self):
-        '''Initialize priorityDictionary by creating binary heap
-of pairs (value,key).  Note that changing or removing a dict entry will
-not remove the old pair from the heap until it is found by smallest() or
-until the heap is rebuilt.'''
-        self.__heap = []
-        dict.__init__(self)
-
-    def smallest(self):
-        '''Find smallest item after removing deleted items from heap.'''
-        if len(self) == 0:
-            raise IndexError("smallest of empty priorityDictionary")
-        heap = self.__heap
-        while heap[0][1] not in self or self[heap[0][1]] != heap[0][0]:
-            lastItem = heap.pop()
-            insertionPoint = 0
-            while 1:
-                smallChild = 2 * insertionPoint + 1
-                if smallChild + 1 < len(heap) and \
-                        heap[smallChild] > heap[smallChild + 1]:
-                    smallChild += 1
-                if smallChild >= len(heap) or lastItem <= heap[smallChild]:
-                    heap[insertionPoint] = lastItem
-                    break
-                heap[insertionPoint] = heap[smallChild]
-                insertionPoint = smallChild
-        return heap[0][1]
-
-    def __iter__(self):
-        '''Create destructive sorted iterator of priorityDictionary.'''
-
-        def iterfn():
-            while len(self) > 0:
-                x = self.smallest()
-                yield x
-                del self[x]
-
-        return iterfn()
-
-    def __setitem__(self, key, val):
-        '''Change value stored in dictionary and add corresponding
-pair to heap.  Rebuilds the heap if the number of deleted items grows
-too large, to avoid memory leakage.'''
-        dict.__setitem__(self, key, val)
-        heap = self.__heap
-        if len(heap) > 2 * len(self):
-            self.__heap = [(v, k) for k, v in self.iteritems()]
-            self.__heap.sort()  # builtin sort likely faster than O(n) heapify
-        else:
-            newPair = (val, key)
-            insertionPoint = len(heap)
-            heap.append(None)
-            while insertionPoint > 0 and \
-                    newPair < heap[(insertionPoint - 1) // 2]:
-                heap[insertionPoint] = heap[(insertionPoint - 1) // 2]
-                insertionPoint = (insertionPoint - 1) // 2
-            heap[insertionPoint] = newPair
-
-    def setdefault(self, key, val):
-        '''Reimplement setdefault to call our customized __setitem__.'''
-        if key not in self:
-            self[key] = val
-        return self[key]
