@@ -183,8 +183,8 @@ class Router(object):
                 with conn:
                     # print("\n TCP Connection on Router {}, From {}:{}".format(self.name, c_ip, c_port))
                     data = conn.recv(4096)
-                    action = Thread(target=self.handle_message, args=(data, c_ip, c_port))
-                    action.start()
+                action = Thread(target=self.handle_message, args=(data, c_ip, c_port))
+                action.start()
 
     def handle_message(self, data: bytes, c_ip, c_port):
         message = data.decode()
@@ -258,9 +258,12 @@ class Router(object):
             for neigh, node in self.neighbors.items():
                 if neigh in [recv_from, src]:
                     continue  # Dont send lsp to the node you received it from
-                action = Thread(target=self.tcp_flood, args=(node, lsp))
-                action.start()
-                threads.append(action)
+                # action = Thread(target=self.tcp_flood, args=(node, lsp))
+                # action.start()
+                # threads.append(action)
+                # sleep(0.5)
+                self.tcp_flood(node, lsp)
+
         for action in threads:
             action.join()
 
