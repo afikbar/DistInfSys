@@ -12,7 +12,7 @@ from weights import get_new_weight
 
 # region LSP
 class LSP(object):
-    def __init__(self, src, seq, neighbors):
+    def __init__(self, src, seq, neighbors, hops = 0):
         '''
         creates lsp
         :param src: source router
