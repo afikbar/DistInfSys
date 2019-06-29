@@ -176,17 +176,33 @@ class Router(object):
                 action = Thread(target=self.handle_message, args=(data, c_ip, c_port))
                 action.start()
 
+    def handle_conn(self, conn: socket, c_ip, c_port):
+        # data = "".encode()
+        # conn.settimeout(1)
+        with conn:
+            # # print("\n TCP Connection on Router {}, From {}:{}".format(self.name, c_ip, c_port))
+            # while True:
+            #     try:
+            #         chunk = conn.recv(4096)
+            #         if not chunk:
+            #             break
+            #         data += chunk
+            #     except Exception as e:
+            #         print("\nError on Router {} - {}. Tried to recv".format(self.name, e))
+            data = conn.recv(4096)
+
+        self.handle_message(data, c_ip, c_port)
+
     def tcp_listener(self):
         with socket(AF_INET, SOCK_STREAM) as s:
             s.bind((self.ip, self.tcp_port))
             s.listen(self.network_size ** 2)
             while self.is_listen():
                 conn, (c_ip, c_port) = s.accept()
-                with conn:
-                    # print("\n TCP Connection on Router {}, From {}:{}".format(self.name, c_ip, c_port))
-                    data = conn.recv(4096)
-                action = Thread(target=self.handle_message, args=(data, c_ip, c_port))
-                action.start()
+                # with conn:
+                #     # print("\n TCP Connection on Router {}, From {}:{}".format(self.name, c_ip, c_port))
+                #     data = conn.recv(4096)
+                Thread(target=self.handle_conn, args=(conn, c_ip, c_port)).start()
 
     def handle_message(self, data: bytes, c_ip, c_port):
         message = data.decode()
@@ -211,6 +227,14 @@ class Router(object):
             self.udp_output_handler.write('\n'.join(lines) + '\n')
             # f.flush()
 
+    def route(self, dest: int, is_udp):
+        with self.table_lock:
+            next_hop = self.routing_table[dest]['next']
+        with self.neighbors_lock:
+            next_ip, next_port = self.neighbors[next_hop].connection_info(is_udp=is_udp)
+
+        return next_ip, next_port
+
     def udp_route(self, data):
         _, dest, message = data.split(sep=';')  # message doesn't contain ';'
         # print("Writing route to file: " + data)
@@ -221,12 +245,7 @@ class Router(object):
         # route to dest according to routing table
         dest = int(dest)
         if self.name != dest:
-            with self.table_lock:
-                next_hop = self.routing_table[dest]['next']
-            with self.neighbors_lock:
-                next_ip, next_port = self.neighbors[next_hop].connection_info(is_udp=True)
-
-            self.udp_send(next_ip, next_port, data)
+            self.udp_send(*self.route(dest, is_udp=True), data)
 
     def udp_send(self, ip, port, message: str):
         with socket(AF_INET, SOCK_DGRAM) as s:
