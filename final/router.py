@@ -23,12 +23,13 @@ class LSP(object):
         self.seq = int(seq)
         self.neighbors = neighbors
         self.recv_from = self.src
+        self.hops = int(hops)
 
     def get_weight(self, neigh) -> int:
         return self.neighbors[neigh]
 
     def to_message(self) -> str:
-        lsp = "LSP;{};{};{}".format(self.recv_from, self.src, self.seq)
+        lsp = "LSP;{};{};{};{}".format(self.recv_from, self.src, self.seq, self.hops)
         for neigh, weight in self.neighbors.items():
             lsp += ";{};{}".format(neigh, weight)
 
@@ -48,11 +49,11 @@ class LSP(object):
 
     @staticmethod
     def parse_lsp(data):
-        # expected data is: LSP;[recv_from];[src];[sequence];[neighbor name];[edge weight]
+        # expected data is: LSP;[recv_from];[src];[sequence];[hops];[neighbor name];[edge weight]
         split_data = data.split(sep=';')[1:]
-        recv_from, src, seq, neighs = split_data[0], split_data[1], split_data[2], split_data[3:]
+        recv_from, src, seq, hops, neighs = split_data[0], split_data[1], split_data[2], split_data[3], split_data[4:]
         neighs_dict = {int(neighs[i]): int(neighs[i + 1]) for i in range(0, len(neighs), 2)}
-        lsp = LSP(src, seq, neighs_dict)
+        lsp = LSP(src, seq, neighs_dict, hops)
         lsp.recv_from = recv_from
         return lsp
 
@@ -134,7 +135,8 @@ class Router(object):
         self.lsdb.add_lsp(
             LSP(src=self.name,
                 seq=seq,
-                neighbors={neigh: node.edge_weight for neigh, node in self.neighbors.items()})
+                neighbors={neigh: node.edge_weight for neigh, node in self.neighbors.items()},
+                hops=0)
         )
 
     def start_listeners(self):
@@ -151,7 +153,7 @@ class Router(object):
         # return threads
 
     def stop_listeners(self):
-        print("Stop listening...")
+        print("\nStop listening on router {}...".format(self.name))
         with self.listen_lock:
             self.listen = False
         with self.udp_output_lock:
@@ -231,7 +233,7 @@ class Router(object):
             try:
                 s.sendto(message.encode(), (ip, port))
             except Exception as e:
-                print("\nError - {}, on Router {}, Tried to send to router {}:{}".format(e, self.name, ip, port))
+                print("\nError on Router {} - {}. Tried to send to router {}:{}".format(self.name, e, ip, port))
 
     def tcp_send(self, ip, port, message):
         with socket(AF_INET, SOCK_STREAM) as s:
@@ -244,31 +246,35 @@ class Router(object):
             except Exception as e:
                 print("\nError on Router {} - {}. Tried to send to router {}:{}".format(self.name, e, ip, port))
 
-    def tcp_flood(self, node: Node, lsp: str):
+    def tcp_flood(self, node: Node, lsp: LSP):
         message = "UPDATE;{};{}".format(self.name, node.name)
         with self.tcp_output_lock:
             self.tcp_output_handler.write(message + '\n')
             # f.flush()
-        self.tcp_send(node.ip, node.tcp_port, lsp)
+        self.tcp_send(node.ip, node.tcp_port, lsp.to_message())
 
-    def flood_lsp(self, lsp: str, src=None, recv_from=None):
+    def flood_lsp(self, lsp: LSP):
         # expected data is: LSP;[recv_from];[src];[sequence];[neighbor name];[edge weight]
         threads = []
+        if lsp.hops + 1 >= self.network_size:
+            return
+        lsp.hops += 1
         with self.neighbors_lock:
             for neigh, node in self.neighbors.items():
-                if neigh in [recv_from, src]:
+                if neigh in [lsp.recv_from, lsp.src]:
                     continue  # Dont send lsp to the node you received it from
                 # action = Thread(target=self.tcp_flood, args=(node, lsp))
-                # action.start()
                 # threads.append(action)
                 # sleep(0.5)
                 self.tcp_flood(node, lsp)
 
-        for action in threads:
-            action.join()
+        # for action in threads:
+        #     action.start()
+        # for action in threads:
+        #     action.join()
 
     def receive_lsp(self, data):
-        # expected data is: LSP;[src];[sequence];[neighbor name];[edge weight]
+        # expected data is: LSP;[src];[sequence];[hops];[neighbor name];[edge weight]
         lsp = LSP.parse_lsp(data)
         with self.lsdb_lock:
             updated = self.lsdb.add_lsp(lsp)
@@ -276,12 +282,14 @@ class Router(object):
         # forward to all
         # TODO: check if lsp should be flooded?
         if updated:
-            self.flood_lsp(data, src=lsp.src, recv_from=lsp.recv_from)
+            self.flood_lsp(lsp)
 
     def update_routing_table(self, c_ip, c_port):
         with self.lsdb_lock:
             lsp = self.lsdb[self.name]
-        self.flood_lsp(lsp.to_message(), src=lsp.src, recv_from=lsp.recv_from)
+            # copy
+            lsp = LSP(lsp.src, lsp.seq, {**lsp.neighbors}, lsp.hops)
+        self.flood_lsp(lsp)
         # Wait until lsp is recieved from all
         while True:
             with self.lsdb_lock:
