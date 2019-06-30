@@ -259,9 +259,9 @@ class Router(object):
             try:
                 s.connect((ip, port))
                 s.sendall(message.encode())
-                response = s.recv(4096)
+                # response = s.recv(4096)
                 # what to do with response?
-                return response
+                # return response
             except Exception as e:
                 print("\nError on Router {} - {}. Tried to send to router {}:{}".format(self.name, e, ip, port))
 
