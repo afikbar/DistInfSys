@@ -12,7 +12,7 @@ from weights import get_new_weight
 
 # region LSP
 class LSP(object):
-    def __init__(self, src, seq, neighbors, hops = 0):
+    def __init__(self, src, seq, neighbors, hops=0):
         '''
         creates lsp
         :param src: source router
@@ -177,19 +177,16 @@ class Router(object):
                 action.start()
 
     def handle_conn(self, conn: socket, c_ip, c_port):
-        # data = "".encode()
-        # conn.settimeout(1)
+        # data = bytes()
         with conn:
-            # # print("\n TCP Connection on Router {}, From {}:{}".format(self.name, c_ip, c_port))
-            # while True:
-            #     try:
-            #         chunk = conn.recv(4096)
-            #         if not chunk:
-            #             break
-            #         data += chunk
-            #     except Exception as e:
-            #         print("\nError on Router {} - {}. Tried to recv".format(self.name, e))
+            # while self.is_listen():
+            #     buffer = conn.recv(4096)
+            #     if not buffer:
+            #         break
+            #     data += buffer
             data = conn.recv(4096)
+            conn.sendall("ACK".encode())
+
 
         self.handle_message(data, c_ip, c_port)
 
@@ -199,9 +196,6 @@ class Router(object):
             s.listen(self.network_size ** 2)
             while self.is_listen():
                 conn, (c_ip, c_port) = s.accept()
-                # with conn:
-                #     # print("\n TCP Connection on Router {}, From {}:{}".format(self.name, c_ip, c_port))
-                #     data = conn.recv(4096)
                 Thread(target=self.handle_conn, args=(conn, c_ip, c_port)).start()
 
     def handle_message(self, data: bytes, c_ip, c_port):
@@ -225,7 +219,6 @@ class Router(object):
 
         with self.udp_output_lock:
             self.udp_output_handler.write('\n'.join(lines) + '\n')
-            # f.flush()
 
     def route(self, dest: int, is_udp):
         with self.table_lock:
@@ -240,7 +233,6 @@ class Router(object):
         # print("Writing route to file: " + data)
         with self.udp_output_lock:
             self.udp_output_handler.write(data + '\n')
-            # f.flush()
 
         # route to dest according to routing table
         dest = int(dest)
@@ -256,14 +248,18 @@ class Router(object):
 
     def tcp_send(self, ip, port, message):
         with socket(AF_INET, SOCK_STREAM) as s:
-            try:
-                s.connect((ip, port))
-                s.sendall(message.encode())
-                # response = s.recv(4096)
-                # what to do with response?
-                # return response
-            except Exception as e:
-                print("\nError on Router {} - {}. Tried to send to router {}:{}".format(self.name, e, ip, port))
+            while True:
+                try:
+                    s.connect((ip, port))
+                    s.sendall(message.encode())
+                    response = s.recv(4096)
+                    if response.decode() == "ACK":
+                        return
+                    else:
+                        print("\nNo ACK on Router {} - {}. Tried to send to router {}:{}".format(self.name, e, ip, port))
+
+                except Exception as e:
+                    print("\nError on Router {} - {}. Tried to send to router {}:{}".format(self.name, e, ip, port))
 
     def tcp_flood(self, node: Node, lsp: LSP):
         message = "UPDATE;{};{}".format(self.name, node.name)
@@ -274,7 +270,6 @@ class Router(object):
 
     def flood_lsp(self, lsp: LSP):
         # expected data is: LSP;[recv_from];[src];[sequence];[neighbor name];[edge weight]
-        threads = []
         if lsp.hops + 1 >= self.network_size:
             return
         lsp.hops += 1
@@ -282,15 +277,7 @@ class Router(object):
             for neigh, node in self.neighbors.items():
                 if neigh in [lsp.recv_from, lsp.src]:
                     continue  # Dont send lsp to the node you received it from
-                # action = Thread(target=self.tcp_flood, args=(node, lsp))
-                # threads.append(action)
-                # sleep(0.5)
                 self.tcp_flood(node, lsp)
-
-        # for action in threads:
-        #     action.start()
-        # for action in threads:
-        #     action.join()
 
     def receive_lsp(self, data):
         # expected data is: LSP;[src];[sequence];[hops];[neighbor name];[edge weight]
@@ -299,7 +286,6 @@ class Router(object):
             updated = self.lsdb.add_lsp(lsp)
 
         # forward to all
-        # TODO: check if lsp should be flooded?
         if updated:
             self.flood_lsp(lsp)
 
