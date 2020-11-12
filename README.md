@@ -1,23 +1,25 @@
-096250 - Distributed Information Systems
+# 096250 - Distributed Information Systems
 
-Notice This course is part of a new "Data Science & Engineering" bachelors degree taught at the Technion. The Technion, Israel Institute of Technology, is ranked at the top 100 engineering schools in the world.
+- Distribution at the organizational level and the IS level
+- Architectures of distributed IS
+- Distributed data bases
+- Communication aspects
+- The client/server model
+- Case studies
 
-Interested? read more [here](http://ds.technion.ac.il/)!
+## Notice
+This course is part of a new "Data Science & Engineering" bachelors degree taught at the Technion.  
+[The Technion](https://en.wikipedia.org/wiki/Technion_%E2%80%93_Israel_Institute_of_Technology), Israel Institute of Technology, is ranked at the top 100 engeering schools in the world.  
 
-Commit Emoji convention
+Interested? read more [here](http://ds.technion.ac.il)!
 
-📝 Add comment or doc
+# Commit emoji convention
 
-🎁 New feature
-
-🐛 Bug fix
-
-💣 Breaking compatibility
-
-✅ Write test
-
-🔥 Remove something
-
-🙏 Hope not to break anything
-
-🍺 Anything else
+- :memo: Add comment or doc
+- :gift: New feature
+- :bug: Bug fix
+- :bomb: Breaking compatibility
+- :white_check_mark: Write test
+- :fire: Remove something
+- :pray: Hope not to break anything
+- :beer: Anything else
